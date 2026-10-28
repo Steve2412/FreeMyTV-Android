@@ -74,6 +74,7 @@ final class RemoteKeys {
 
     /** Opens the app for this key on its first press. True if the key is ours and in use (it is then consumed). */
     static boolean onKey(Context c, KeyEvent e) {
+        if (e.getKeyCode() == KeyEvent.KEYCODE_HOME) return home(c, e);
         if (!supported()) return false;
         // BUTTON_3 is also a game controller's button: keys from a gamepad or a joystick are left alone.
         int source = e.getSource();
@@ -107,6 +108,28 @@ final class RemoteKeys {
             if (intent != null) c.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         }
         return true;
+    }
+
+    /**
+     * The Home button, on any brand: opens Free My TV's home screen, whatever the TV made its default (its own launcher
+     * may claim a priority no app can). Only while the person has this service on in Android's Accessibility settings
+     * and hasn't chosen Original (HomeChooser.homeButtonOn). Long presses are consumed too, so the TV's launcher never
+     * flashes by.
+     */
+    static boolean home(Context c, KeyEvent e) {
+        if (!HomeChooser.homeButtonOn(c)) return false;
+        if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) openHome(c);
+        return true;
+    }
+
+    static void openHome(Context c) {
+        Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setComponent(HomeChooser.HOME)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        try {
+            c.startActivity(home);
+        } catch (RuntimeException ex) {
+            AppLog.w("home button: " + ex.getMessage());
+        }
     }
 
     /** The app's TV launcher, or its plain one (kept here, not in HomeApps, so the key process stays small). */

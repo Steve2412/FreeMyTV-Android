@@ -97,6 +97,12 @@ public class SettingsActivity extends Activity {
         setIntent(intent);
     }
 
+    /** Android's "default home app" request (HomeChooser) answered. */
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == HomeChooser.REQUEST_ROLE) HomeChooser.onResult(this, resultCode);
+    }
+
     @Override protected void onPause() {
         closePreview();     // before pausing the view: closing the preview resumes it (view.resume)
         if (view != null) view.pause();
@@ -297,10 +303,14 @@ public class SettingsActivity extends Activity {
                     return row - 1 < names.length ? names[row - 1] : "";
                 }
                 case HOME_CHOICE: {
+                    if (row == 2) {
+                        return Ui.tr("Home button") + ", " + onOff(HomeChooser.serviceEnabled(getContext()))
+                                + ", " + Ui.trf("{i} of {n}", "i", 3, "n", 3);
+                    }
                     String name = row == 0 ? "Free My TV, " + Ui.tr("no ads, with the new screensaver")
                             : "Original, " + Ui.tr("the TV's factory home screen");
                     boolean inUse = (row == 0) == freeActive();
-                    return name + (inUse ? Ui.tr(". In use") : "") + ", " + Ui.trf("{i} of {n}", "i", row + 1, "n", 2);
+                    return name + (inUse ? Ui.tr(". In use") : "") + ", " + Ui.trf("{i} of {n}", "i", row + 1, "n", 3);
                 }
                 case HOME_SETTINGS:
                 case REMOTE_KEYS:
@@ -449,7 +459,7 @@ public class SettingsActivity extends Activity {
         private int rowCount() {
             switch (screen) {
                 case MAIN: return 8;
-                case HOME_CHOICE: return 2;
+                case HOME_CHOICE: return 3;
                 case HOME_SETTINGS: return Math.min(SETTINGS_VISIBLE, settingLabels().length);
                 case PICKER: return Math.min(PICK_VISIBLE, pickLabels.size());
                 case SHELF_EDIT: return Math.min(PICK_VISIBLE, shelfRows.size());
@@ -637,10 +647,11 @@ public class SettingsActivity extends Activity {
         private void drawChoice(Canvas c) {
             Paint heading = Ui.text(Ui.displaySemibold, 34 * k, 0xFFFFFFFF);
             c.drawText(Ui.tr("Home Screen"), LIST_X * k + 30 * k, (LIST_TOP - 24) * k, heading);
-            String[][] options = {{"Free My TV", Ui.tr("No ads, with the new screensaver")},
-                    {Ui.tr("Original"), Ui.tr("The TV's factory home screen")}};
+            String[][] options = {{"Free My TV", Ui.tr("Android asks which home screen to use; nothing is turned off")},
+                    {Ui.tr("Original"), Ui.tr("The TV's factory home screen")},
+                    {Ui.tr("Home button"), Ui.tr("Always opens Free My TV (Android › Accessibility)")}};
             int current = freeActive() ? 0 : 1;
-            for (int i = 0; i < 2; i++) {
+            for (int i = 0; i < options.length; i++) {
                 float y = (LIST_TOP + 20 + i * (CHOICE_H + ROW_GAP)) * k;
                 rowRect.set(LIST_X * k, y, LIST_R * k, y + CHOICE_H * k);
                 float f = drawRowBackground(c, i);
@@ -648,14 +659,19 @@ public class SettingsActivity extends Activity {
                 rowSub.setColor(blend(0x8CFFFFFF, 0x991C1C1E, f));
                 c.drawText(options[i][0], rowRect.left + 30 * k, rowRect.top + 44 * k, rowLabel);
                 c.drawText(options[i][1], rowRect.left + 30 * k, rowRect.top + 80 * k, rowSub);
-                if (i == current) {
+                if (i == 2) {
+                    rowValue.setColor(blend(0x8CFFFFFF, 0x8C1C1C1E, f));
+                    c.drawText(onOff(HomeChooser.serviceEnabled(getContext())), rowRect.right - 30 * k,
+                            rowRect.centerY() + Ui.halfCap(rowValue), rowValue);
+                } else if (i == current) {
                     float cw = Symbols.width(getContext(), "check", 26 * k);
                     Symbols.draw(getContext(), c, "check", rowRect.right - 30 * k - cw / 2, rowRect.centerY(), 26 * k, blend(0xFFFFFFFF, INK, f));
                 }
             }
             Paint hint = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
-            c.drawText(Ui.tr("Switching takes a few seconds; the screen blinks while it measures."), LIST_X * k + 30 * k,
-                    (LIST_TOP + 20 + 2 * (CHOICE_H + ROW_GAP) + 40) * k, hint);
+            float hy = (LIST_TOP + 20 + options.length * (CHOICE_H + ROW_GAP) + 40) * k;
+            c.drawText(Ui.tr("Free My TV: if Android asks, pick Free My TV and “Always”."), LIST_X * k + 30 * k, hy, hint);
+            c.drawText(Ui.tr("Home button: OK opens Accessibility; turn on “Free My TV” there."), LIST_X * k + 30 * k, hy + 38 * k, hint);
         }
 
         private static int blend(int a, int b, float f) {
@@ -1774,12 +1790,22 @@ public class SettingsActivity extends Activity {
             Context c = getContext();
             if (tellWhy()) return;
             if (screen == HOME_CHOICE) {
+                if (focus == 2) {   // the Home button: the person turns our service on or off in Android's settings
+                    HomeChooser.openAccessibility(activity);
+                    return;
+                }
                 boolean wantFree = focus == 0;
                 boolean already = wantFree ? freeActive() : HomeMode.ORIGINAL.equals(state.optString("mode", HomeMode.ORIGINAL));
+                boolean legacy = HomeMode.legacySwitch(c);
                 if (!already && !busy()) {
                     HomeMode.request(c, wantFree ? HomeMode.FREE : HomeMode.ORIGINAL);
                     pendingAt = SystemClock.uptimeMillis();
                 }
+                HomeChooser.setHomeButton(c, wantFree);
+                // Android asks (no ADB): ours as the home screen, or back to the TV's own. An earlier ADB switch is
+                // undone by the job itself, which also gives the home screen back.
+                if (wantFree) HomeChooser.ask(activity);
+                else if (!legacy) HomeChooser.original(activity);
                 screen = MAIN;
                 focus = 0;
             } else if (screen == PICKER && pickFor == PICK_CITY) {

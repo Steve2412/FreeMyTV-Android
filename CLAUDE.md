@@ -1,5 +1,12 @@
 # Free My TV: notes for Claude
 
+> **This copy is a personal version (branch `mi-version`, see MI-VERSION.md).** It never turns apps off and never
+> replaces the home screen through ADB: "Free My TV" only asks Android to pick the home screen (`HomeChooser`), the
+> Home button goes to Free My TV through the accessibility service the person turns on in Android's settings
+> (`RemoteKeys.home`), "Original" undoes only what an earlier build turned off. It adds a Stremio "Continue Watching"
+> tab (`Stremio`, `stremio_auth_key`) and the CVTE cable TV app on the shelf (`HomeApps.CABLE_TV`). The rules below
+> about the ADB switch apply only to that legacy undo.
+
 A home screen for Google TV and Android TV that replaces the stock one, plus a settings app that switches between
 Free My TV and the TV's original home screen. A plain Android app in Java, built without Gradle by `build.sh`.
 LG TVs (webOS) and Samsung TVs (Tizen) get the same home screen as a web app: `web/`, packed by `webos/` and `tizen/`

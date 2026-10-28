@@ -58,6 +58,9 @@
         <package android:name="com.crunchyroll.crunchyroid" />
         <package android:name="net.cme.voyo.cz.tvapp" />
         <package android:name="com.spotify.tv.android" />
+        <!-- Stremio (its Continue Watching tab) and the TV's cable TV app (CVTE boards: on the shelf) -->
+        <package android:name="com.stremio.one" />
+        <package android:name="com.cvte.tv.setting" />
         <package android:name="com.tcl.tv" />
         <package android:name="com.google.android.tv" />
         <package android:name="com.mediatek.wwtv.tvcenter" />
@@ -84,6 +87,10 @@
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="content" android:host="android.media.tv" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="stremio" />
         </intent>
     </queries>
 

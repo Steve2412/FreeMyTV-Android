@@ -89,6 +89,9 @@ final class HomeApps {
      * art's colors as they are. Last, a visual size tweak for the logo. Edit freely.
      */
     private static final String[][] SHELF = {
+        // The TV's cable TV app (CVTE boards); it has no launcher entry, so CABLE_TV opens it (launchIntent). Its logo
+        // is bundled (assets/logos/cabletv.png), on a tile like Apple TV's.
+        {"cabletv", "TV Cable", "com.cvte.tv.setting", "B8BCC6", "", "1.12"},
         {"netflix", "Netflix", "com.netflix.ninja", "E50914", "", "1"},
         {"youtube", "YouTube", "com.google.android.youtube.tv", "FF0033", "play", "1"},
         {"youtube", "YouTube", "com.amazon.firetv.youtube", "FF0033", "play", "1"},
@@ -584,6 +587,15 @@ final class HomeApps {
             return true;
         } catch (ActivityNotFoundException | SecurityException e) {
             AppLog.w("couldn't open " + it.label + ": " + e.getMessage());
+            // An app's own scheme (stremio://) may not be marked browsable: the same address without that category.
+            if (it.kind == APP && it.uri != null && !it.uri.startsWith("http")) {
+                try {
+                    a.startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(it.uri)).setPackage(it.pkg)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), options);
+                    return true;
+                } catch (ActivityNotFoundException | SecurityException ignored) {
+                }
+            }
             if (plain == null || plain == intent) return false;
             plain.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             try {
@@ -716,9 +728,19 @@ final class HomeApps {
         return out;
     }
 
+    /** The cable TV app on CVTE boards: com.cvte.tv.setting/.TvSettingActivity, with no launcher entry of its own. */
+    static final String CABLE_TV_PKG = "com.cvte.tv.setting";
+    private static final ComponentName CABLE_TV = new ComponentName(CABLE_TV_PKG, CABLE_TV_PKG + ".TvSettingActivity");
+
     static Intent launchIntent(PackageManager pm, String pkg) {
         Intent intent = pm.getLeanbackLaunchIntentForPackage(pkg);
-        return intent != null ? intent : pm.getLaunchIntentForPackage(pkg);
+        if (intent == null) intent = pm.getLaunchIntentForPackage(pkg);
+        if (intent == null && CABLE_TV_PKG.equals(pkg)) {
+            Intent cable = new Intent(Intent.ACTION_MAIN).setComponent(CABLE_TV);
+            // resolveActivityInfo looks (Intent.resolveActivity hands an explicit component back without looking)
+            if (cable.resolveActivityInfo(pm, 0) != null) intent = cable;
+        }
+        return intent;
     }
 
     // MARK: - Colored logos (shelf)

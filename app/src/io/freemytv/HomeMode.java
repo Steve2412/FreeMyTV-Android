@@ -262,6 +262,8 @@ final class HomeMode {
     }
 
     static void ensureRemoteServiceNow(Context app) {
+        // This build leaves the service to the person (Android's Accessibility settings): ADB never adds or removes it.
+        if (!legacySwitch(state(app))) return;
         if (!RemoteKeys.supported() || !FREE.equals(state(app).optString("mode"))) return;
         try (Adb adb = Adb.connect(app, 10_000, null)) {
             remoteService(app, adb, RemoteKeys.serviceWanted());
@@ -352,9 +354,62 @@ final class HomeMode {
 
     // MARK: - Switches (main process, from ModeJob)
 
+    /**
+     * This build never turns apps off and never replaces the TV's home screen through ADB: "Free My TV" only marks the
+     * mode, and Android itself asks which home screen to use (HomeChooser, from the settings screen). "Original" runs
+     * the old full restore only when an earlier build did switch through ADB (apps it turned off, or the home screen
+     * it set), so a TV switched before keeps its way back.
+     */
     static void applyNow(Context c, String mode) {
         synchronized (RUN) {
-            if (FREE.equals(mode)) applyFree(c); else applyOriginal(c);
+            if (FREE.equals(mode)) applySimpleFree(c);
+            else if (legacySwitch(c)) applyOriginal(c);
+            else applySimpleOriginal(c);
+        }
+    }
+
+    /**
+     * As legacySwitch(state), plus the list an earlier install left in the TV's settings (RECORD): an uninstall erases
+     * our state file, not that list, so Original here can still turn those apps back on.
+     */
+    static boolean legacySwitch(Context c) {
+        if (legacySwitch(state(c))) return true;
+        try {
+            String v = android.provider.Settings.Global.getString(c.getContentResolver(), RECORD);
+            return v != null && !v.trim().isEmpty() && !v.trim().equals("null");
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** An earlier build switched through ADB: apps turned off, or Free My TV mode set without this build's mark. */
+    static boolean legacySwitch(JSONObject s) {
+        return !stringList(s, "disabled").isEmpty() || (FREE.equals(s.optString("mode")) && !s.optBoolean("simple"));
+    }
+
+    private static void applySimpleFree(Context c) {
+        try {
+            Watchdog.clear(c);
+            JSONObject s = state(c);
+            s.put("mode", FREE).put("simple", true).put("since", System.currentTimeMillis()).put("homeReverted", false);
+            save(c, s);
+            notice(c, Ui.tr("Free My TV is on. Nothing was turned off: Android picks the home screen."));
+            done(c, null);
+        } catch (Exception e) {
+            done(c, Ui.trf("Couldn't turn on Free My TV: {error}", "error", e.getMessage()));
+        }
+    }
+
+    private static void applySimpleOriginal(Context c) {
+        try {
+            JSONObject s = state(c);
+            s.put("mode", ORIGINAL).put("simple", true).put("since", System.currentTimeMillis()).put("homeReverted", false);
+            save(c, s);
+            SleepTimer.stop(c);
+            notice(c, Ui.tr("Original mode: the TV's own home screen."));
+            done(c, null);
+        } catch (Exception e) {
+            done(c, Ui.trf("Couldn't go back to the original: {error}", "error", e.getMessage()));
         }
     }
 
@@ -494,6 +549,7 @@ final class HomeMode {
             busy(c, Ui.tr("Turning the apps back on…"));
             String home = originalHome(s);
             Set<String> toEnable = new HashSet<>(stringList(s, "disabled"));
+            toEnable.addAll(recorded(adb));   // what an earlier install turned off (its state file went with it)
             for (String pkg : targets(home, originalDream(s), true)) {
                 if (!Arrays.asList(DEBLOAT).contains(pkg) && !Arrays.asList(ASSISTANT).contains(pkg)) toEnable.add(pkg);
             }
@@ -608,6 +664,31 @@ final class HomeMode {
     static void revertHomeNow(Context app) {
         synchronized (RUN) {
             JSONObject s = state(app);
+            if (!legacySwitch(s)) {
+                // Nothing was switched through ADB: ours stops being the preferred home, the Home button goes back to
+                // the TV, and the TV's own home screen opens.
+                if (!FREE.equals(s.optString("mode")) || s.optBoolean("homeReverted")) return;
+                try {
+                    app.getPackageManager().clearPackagePreferredActivities(PKG);
+                } catch (RuntimeException e) {
+                    AppLog.w("clear preferred home: " + e.getMessage());
+                }
+                HomeChooser.setHomeButton(app, false);
+                try {
+                    s.put("homeReverted", true);
+                } catch (JSONException ignored) {}
+                save(app, s);
+                notice(app, Ui.tr("Free My TV's home screen crashed 3 times in a row; I switched back to the original one."));
+                android.content.Intent stock = HomeChooser.stockHome(app);
+                if (stock != null) {
+                    try {
+                        app.startActivity(stock);
+                    } catch (RuntimeException e) {
+                        AppLog.w("stock home: " + e.getMessage());
+                    }
+                }
+                return;
+            }
             try (Adb adb = Adb.connect(app, 10_000, null)) {
                 boolean ours = homeHolder(adb).contains(PKG);
                 if (!ours && (!FREE.equals(s.optString("mode")) || s.optBoolean("homeReverted"))) return;
@@ -673,6 +754,17 @@ final class HomeMode {
                 save(app, s);
             } catch (JSONException ignored) {}
             if (!FREE.equals(s.optString("mode")) || AMAZON) return;
+            if (!legacySwitch(s)) {
+                // Nothing to check or put back: no app was turned off. Only the Now Playing widget's permission, and only
+                // while that widget is on (it asks ADB to allow our listener).
+                if (s.optBoolean("homeReverted") || !nowPlayingOn()) return;
+                try (Adb adb = Adb.connect(app, 10_000, null)) {
+                    nowPlaying(app, adb, true);
+                } catch (IOException e) {
+                    AppLog.w("now playing: " + e.getMessage());
+                }
+                return;
+            }
             List<String> fixed = new ArrayList<>();
             try (Adb adb = Adb.connect(app, 10_000, null)) {
                 try {   // as the widget says: a TV update can take it back, and a take-back can have failed

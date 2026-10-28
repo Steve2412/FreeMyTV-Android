@@ -140,6 +140,7 @@ final class Recs {
         SERVICE_NAME.put("amediateka", "Амедиатека");
         SERVICE_NAME.put("wink", "Wink");
         SERVICE_NAME.put("plex", "Plex");
+        SERVICE_NAME.put(Stremio.KIND, "Stremio");
     }
     /** Country for "what streams where" (config.properties "tmdb_region", e.g. US, GB, BR). */
     static final String REGION = Place.region();
@@ -181,6 +182,11 @@ final class Recs {
     private volatile boolean light;     // light design: builds only the cards (all three tabs' cards fit in memory)
     private volatile long failedAt, keyStamp, linkRetryAt;
     private volatile String listLanguage = "";   // language used for the saved titles, genres and texts
+    // Stremio's Continue Watching (its own tab): fetched apart from TMDB's picks, with no TMDB key needed.
+    private volatile List<Pick> stremio = new ArrayList<>();
+    private volatile long stremioAt, stremioFailedAt;
+    private volatile boolean stremioFetching;
+    private static final long STREMIO_EVERY = 5 * 60_000L;
 
     private Recs(Context c) {
         context = c;
@@ -193,6 +199,8 @@ final class Recs {
             listAt = cache.getLong("listAt", 0);
             listLanguage = cache.getString("language", cache.getBoolean("english", false) ? "en" : "pt");
             keyStamp = cache.getLong("keyStamp", 0);
+            String saved2 = cache.getString("stremio", null);
+            if (Stremio.ON && saved2 != null) stremio = parse(new JSONArray(saved2));
         } catch (Exception ignored) {
         }
         // Right after the TV starts, the first fetch runs before the Wi-Fi is up and fails, which would hold the old
@@ -303,6 +311,7 @@ final class Recs {
 
     /** This hour's picks, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
     List<Pick> now(String kind) {
+        if (Stremio.KIND.equals(kind)) return stremioNow();
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
@@ -326,6 +335,65 @@ final class Recs {
             }
         }
         return out;
+    }
+
+    /** Stremio's tab: the titles to continue, the last watched first, while Stremio is on the TV. */
+    private List<Pick> stremioNow() {
+        List<Pick> out = new ArrayList<>();
+        if (!Stremio.ON) return out;
+        String pkg = stremioPkg();
+        if (pkg == null) return out;
+        int cards = Prefs.cards();
+        for (Pick p : stremio) {
+            if (out.size() >= cards) break;
+            p.pkg = pkg;
+            out.add(p);
+        }
+        return out;
+    }
+
+    private volatile String stremioPkg;
+    private volatile long stremioPkgAt;
+
+    /** Which app opens stremio:// links, looked up once a minute (this runs every 15 s). */
+    private String stremioPkg() {
+        long now = System.currentTimeMillis();
+        if (now - stremioPkgAt > 60_000L || now < stremioPkgAt) {
+            stremioPkg = Stremio.pkg(context);
+            stremioPkgAt = now;
+        }
+        return stremioPkg;
+    }
+
+    /** Every 5 minutes while the home screen shows (10 after a failure): the list, then its images. */
+    private void refreshStremio() {
+        if (!Stremio.ON || stremioFetching || stremioPkg() == null) return;
+        long now = System.currentTimeMillis();
+        if (now - stremioAt < STREMIO_EVERY && now >= stremioAt) return;
+        if (stremioFailedAt != 0 && now - stremioFailedAt < 10 * 60_000L && now >= stremioFailedAt) return;
+        stremioFetching = true;
+        io.execute(() -> {
+            try {
+                List<Pick> list = Stremio.fetch(MAX_CARDS);
+                for (Pick p : list) {
+                    try {
+                        download(p);
+                    } catch (IOException e) {
+                        AppLog.w("stremio image: " + e.getMessage());
+                    }
+                }
+                stremio = list;
+                stremioAt = System.currentTimeMillis();
+                stremioFailedAt = 0;
+                cache.edit().putString("stremio", toJson(list).toString()).apply();
+            } catch (Exception e) {
+                stremioFailedAt = System.currentTimeMillis();
+                AppLog.w("stremio: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
+            } finally {
+                stremioFetching = false;
+                notifyListeners();
+            }
+        });
     }
 
     /** "Law & Order: Special Victims Unit" → "law & order" (what comes before ":" or " - "). */
@@ -365,11 +433,21 @@ final class Recs {
     }
 
     private File imageFile(Pick p) {
-        return new File(new File(context.getCacheDir(), "recs"), p.backdrop.replace("/", ""));
+        return new File(new File(context.getCacheDir(), "recs"), web(p.backdrop) ? webName(p.backdrop) : p.backdrop.replace("/", ""));
+    }
+
+    /** A whole address (Stremio's images), not a TMDB or Plex path. */
+    private static boolean web(String path) {
+        return path != null && path.startsWith("https://");
+    }
+
+    private static String webName(String url) {
+        return "w" + url.replaceFirst("^https://", "").replaceAll("[^A-Za-z0-9._-]", "_");
     }
 
     /** With a key: fetches the list if stale or the time of day (morning/afternoon/night) changed; then the details. */
     void refreshIfStale() {
+        refreshStremio();
         if (!hasKey(context) || fetching) return;
         long now = System.currentTimeMillis();
         long stamp = sourceStamp();   // a new key, country, animation choice or installed streaming-app set refetches
@@ -968,13 +1046,13 @@ final class Recs {
 
     private void download(Pick p) throws IOException {
         File f = imageFile(p);
-        if (!f.exists()) fetchFile(f, p.id < 0
+        if (!f.exists()) fetchFile(f, web(p.backdrop) ? (HttpURLConnection) new URL(p.backdrop).openConnection() : p.id < 0
                 ? plexOpen("/photo/:/transcode?width=1920&height=1080&minSize=1&url=" + URLEncoder.encode(p.backdrop, "UTF-8"))
                 : (HttpURLConnection) new URL(IMAGES + p.backdrop).openConnection());
         File poster = posterFile(p);
         if (poster == null || poster.exists()) return;
         try {   // the narrow cards: without a poster they crop the backdrop
-            fetchFile(poster, p.id < 0
+            fetchFile(poster, web(p.poster) ? (HttpURLConnection) new URL(p.poster).openConnection() : p.id < 0
                     ? plexOpen("/photo/:/transcode?width=500&height=750&minSize=1&url=" + URLEncoder.encode(p.poster, "UTF-8"))
                     : (HttpURLConnection) new URL(POSTERS + p.poster).openConnection());
         } catch (IOException e) {
@@ -983,7 +1061,8 @@ final class Recs {
     }
 
     private File posterFile(Pick p) {
-        return p.poster == null || p.poster.isEmpty() ? null : new File(new File(context.getCacheDir(), "recs"), "p" + p.poster.replace("/", ""));
+        return p.poster == null || p.poster.isEmpty() ? null : new File(new File(context.getCacheDir(), "recs"),
+                "p" + (web(p.poster) ? webName(p.poster) : p.poster.replace("/", "")));
     }
 
     private void fetchFile(File f, HttpURLConnection c) throws IOException {
@@ -1094,13 +1173,7 @@ final class Recs {
 
     private void save() {
         try {
-            JSONArray a = new JSONArray();
-            for (Pick p : picks) {
-                a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
-                        .put("poster", p.poster == null ? "" : p.poster).put("link", p.link == null ? "" : p.link)
-                        .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
-                        .put("detailed", p.detailed));
-            }
+            JSONArray a = toJson(picks);
             SharedPreferences.Editor e = cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
                     .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION);
@@ -1111,6 +1184,17 @@ final class Recs {
             e.apply();
         } catch (Exception ignored) {
         }
+    }
+
+    private static JSONArray toJson(List<Pick> list) throws org.json.JSONException {
+        JSONArray a = new JSONArray();
+        for (Pick p : list) {
+            a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
+                    .put("poster", p.poster == null ? "" : p.poster).put("link", p.link == null ? "" : p.link)
+                    .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
+                    .put("detailed", p.detailed));
+        }
+        return a;
     }
 
     private static List<Pick> parse(JSONArray a) {

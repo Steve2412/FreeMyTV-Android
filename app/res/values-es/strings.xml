@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="remote_key_service">Hace que el botón Inicio abra siempre Free My TV, y que los botones de apps del control abran las apps que elegiste en Free My TV, desde cualquier app. Solo lee esos botones.</string>
+</resources>
