@@ -2245,11 +2245,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (running) reloadSoon();
     }
 
-    // MARK: - Keys: only the arrows, OK, Back and Settings (system keys pass through to the system)
+    // MARK: - Keys: only the arrows, OK, Back, ☰ and Settings (system keys pass through to the system)
 
     boolean onKey(KeyEvent e) {
         wake();
         boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
+        // Keys other than the arrows, OK and Back go to the log: what a remote's button sends (adb logcat -s FreeMyTV).
+        if (down && e.getRepeatCount() == 0 && (e.getKeyCode() < KeyEvent.KEYCODE_DPAD_UP || e.getKeyCode() > KeyEvent.KEYCODE_DPAD_CENTER)
+                && e.getKeyCode() != KeyEvent.KEYCODE_BACK && e.getKeyCode() != KeyEvent.KEYCODE_ENTER) {
+            AppLog.w("key " + e.getKeyCode() + " (" + KeyEvent.keyCodeToString(e.getKeyCode()) + ")");
+        }
         if (reordering) return reorderKey(e, down);
         int code = e.getKeyCode();
         if (down && code != KeyEvent.KEYCODE_DPAD_CENTER && code != KeyEvent.KEYCODE_ENTER
@@ -2294,6 +2299,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     if (okDown && !okHeld && !e.isCanceled() && spoken.keyClick()) activate();
                     okDown = okHeld = false;
                 }
+                return true;
+            case KeyEvent.KEYCODE_MENU:
+                // The remote's ☰ button: the focused app's menu (shelf, info, uninstall).
+                if (appMenuItem() == null) return false;
+                if (down && e.getRepeatCount() == 0) showAppMenu();
                 return true;
             case KeyEvent.KEYCODE_SETTINGS:
             case KeyEvent.KEYCODE_NOTIFICATION:
@@ -2516,7 +2526,74 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     // MARK: - Holding OK: All Apps puts the app on the shelf or takes it off; on the shelf, the app is lifted to move
 
     private void hold() {
-        if (sheetOpen) toggleShelf(); else startReorder();
+        if (sheetOpen) {
+            handler.removeCallbacks(holdStart);
+            holdArmed = false;
+            okHeld = true;   // the release must not open the app
+            showAppMenu();
+        } else {
+            startReorder();
+        }
+    }
+
+    // MARK: - The app menu (☰ on the remote, or OK held in All Apps): shelf, app info, uninstall
+
+    /** The app the menu is for: the focused one in All Apps, or on the shelf; null elsewhere. */
+    private HomeApps.Item appMenuItem() {
+        HomeApps.Item it = null;
+        if (sheetOpen) {
+            if (gridIndex < others.size()) it = others.get(gridIndex);
+        } else if (zone == Z_SHELF && !drawerOpen && shelfIndex < shelf.size()) {
+            it = shelf.get(shelfIndex);
+        }
+        return it != null && it.kind == HomeApps.APP && it.pkg != null ? it : null;
+    }
+
+    private void showAppMenu() {
+        final HomeApps.Item it = appMenuItem();
+        if (it == null) return;
+        final Context c = getContext();
+        PackageManager pm = c.getPackageManager();
+        boolean onShelf = HomeApps.shelfPackages(c).contains(it.pkg);
+        boolean system = true;
+        try {
+            system = (pm.getApplicationInfo(it.pkg, 0).flags & android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0;
+        } catch (PackageManager.NameNotFoundException ignored) {
+        }
+        final boolean canMove = !sheetOpen && canReorder();
+        final List<String> labels = new ArrayList<>();
+        final List<Runnable> actions = new ArrayList<>();
+        labels.add(onShelf ? Ui.tr("Remove from the shelf") : Ui.tr("Add to the shelf"));
+        actions.add(() -> toggleShelf(it));
+        if (canMove) {
+            labels.add(Ui.tr("Move on the shelf"));
+            actions.add(this::startReorder);
+        }
+        labels.add(Ui.tr("App info"));
+        actions.add(() -> startApp(new android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                android.net.Uri.fromParts("package", it.pkg, null)), it));
+        // Only apps you installed: the TV's own apps can't be uninstalled (only turned off, in the TV's settings).
+        if (!system) {
+            labels.add(Ui.tr("Uninstall"));
+            actions.add(() -> startApp(new android.content.Intent(android.content.Intent.ACTION_DELETE,
+                    android.net.Uri.fromParts("package", it.pkg, null)), it));
+        }
+        click.open();
+        new android.app.AlertDialog.Builder(activity, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(it.label)
+                .setItems(labels.toArray(new String[0]), (d, which) -> actions.get(which).run())
+                .setNegativeButton(Ui.tr("Cancel"), null)
+                .show();
+    }
+
+    /** App info or Android's uninstaller (it asks before removing anything). */
+    private void startApp(android.content.Intent intent, HomeApps.Item it) {
+        try {
+            activity.startActivity(intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (RuntimeException e) {
+            AppLog.w("app menu: " + e.getMessage());
+            showToast(Ui.trf("Couldn't open {app}.", "app", it.label));
+        }
     }
 
     /** TalkBack's long click on an app in All Apps (once per press, if the remote's hold also arrives). */
@@ -2538,8 +2615,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         holdArmed = false;
         if (!canToggleShelf(gridIndex)) return;
         okHeld = true;
+        toggleShelf(others.get(gridIndex));
+    }
+
+    private void toggleShelf(final HomeApps.Item it) {
         toggledAt = SystemClock.uptimeMillis();
-        final HomeApps.Item it = others.get(gridIndex);
         final Context c = getContext().getApplicationContext();
         click.open();
         LOADER.execute(() -> {
