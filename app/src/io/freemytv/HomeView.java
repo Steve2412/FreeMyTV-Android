@@ -517,7 +517,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             pickIndex = 0;
             updatePicks();
         }
-        if (tab != firstTab()) selectTab(firstTab());
+        if (tab != homeTab()) selectTab(homeTab());
         retarget(!animated);
         motionDirty = true;
     }
@@ -3034,6 +3034,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (tab < laidOutFirst && laidOutFirst < NT) tab = laidOutFirst;
             layoutLight();
         }
+        if (tab < 0 || tab >= NT) tab = homeTab();   // never past the tabs there are (no picks: no tabs at all)
         List<Recs.Pick> list = recs.now(TAB_KIND[tab]);
         if (!samePicks(list, cards)) {
             cards = list;
@@ -3157,6 +3158,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** The first tab shown: Explore, or, with no TMDB key, Stremio's (the last); NT when no tab shows. */
     private int firstTab() {
         return Recs.hasKey(getContext()) ? 0 : Stremio.ON ? NT - 1 : NT;
+    }
+
+    /**
+     * The tab the home screen goes back to (Home pressed on it): the first one shown, and with no tab shown (no TMDB key
+     * and no Stremio) still a real one, never NT: TAB_KIND[NT] crashed the home screen on every Home press.
+     */
+    private int homeTab() {
+        return Math.min(firstTab(), NT - 1);
     }
 
     private void drawClock(Canvas c) {
