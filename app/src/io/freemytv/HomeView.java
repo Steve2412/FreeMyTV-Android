@@ -158,6 +158,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final RectF[] cardRects = new RectF[Recs.MAX_CARDS];
     private final List<HomeApps.Item> lightButtons = new ArrayList<>();
     private Paint lTitle, lTab, lTabOn, lCardTitle, lCardMeta, lQuote, lTip, lDate, lClock, lWeather, lClockQuote;
+    /** The focused shelf app: a ring around it and its name under the glass. */
+    private Paint shelfName, shelfRing;
     private Shader lightGradient;
 
     // Shelf
@@ -575,7 +577,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         // Sized to what they draw (the glass and its shadow; the grown tiles and their shadows): smaller layers are
         // cheaper for the GPU to composite on every frame of the drawer animation.
         measure(platter, width, Math.round(320 * kk));
-        measure(tiles, width, Math.round(270 * kk));
+        measure(tiles, width, Math.round(290 * kk));   // to the screen's bottom: the focused app's name goes under the glass
         measure(drawerLayer, width, Math.round(600 * kk));
         measure(sheetLayer, width, height);
         measure(toastLayer, Math.round(1000 * kk), Math.round(220 * kk));
@@ -648,6 +650,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lQuote = Ui.numbers(Ui.regular, 21 * k, L_FAINT);
         lTip = Ui.text(Ui.semibold, 25 * k, L_INK);
         lTip.setTextAlign(Paint.Align.CENTER);
+        shelfName = Ui.text(Ui.semibold, 25 * k, L_INK);
+        shelfName.setTextAlign(Paint.Align.CENTER);
+        shelfRing = new Paint(Paint.ANTI_ALIAS_FLAG);
+        shelfRing.setStyle(Paint.Style.STROKE);
+        shelfRing.setStrokeWidth(4 * k);
         lDate = Ui.text(Ui.semibold, 34 * k, L_DIM);
         lClock = Ui.numbers(Ui.light, 200 * k, L_INK);
         lClock.setLetterSpacing(-0.01f);
@@ -1479,6 +1486,17 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             }
         }
         if (scrolls) c.restore();
+        // The focused app's name, under the glass (fading with the focus), kept inside the screen's margins.
+        if (top >= 0 && top < shelf.size() && shelfName != null && liftIndex < 0) {
+            float f = Ui.clamp(tileFocus[top].value);
+            String name = shelf.get(top).label;
+            if (f > 0.02f && name != null && !name.isEmpty()) {
+                float half = shelfName.measureText(name) / 2;
+                float x = Math.max(MARGIN * k + half, Math.min(CONTENT_R * k - half, tileRects[top].centerX()));
+                shelfName.setColor(Ui.alpha(tone(L_INK, WHITE), f));
+                c.drawText(name, x, platterRect.bottom + (30 + 4 * f) * k, shelfName);
+            }
+        }
         // More apps than fit: a small arrow inside the glass's edge on each side that has more, where no tile reaches
         // even focused (inside the screen's safe area).
         float cy = platterRect.centerY(), size = 28 * k, inset = 14 * k;
@@ -1550,6 +1568,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             drawLogo(c, it, cell, s, 0);
         } else {
             if (it.tile != null) roundImage(c, it.tile, it.tileShader, cell, r);
+        }
+        // Focused: a thin ring a little outside the tile (dark by day, white at night), so the app in focus is plain
+        // at a glance whatever its art looks like.
+        if (fc > 0.01f && shelfRing != null) {
+            float gap = 6 * k * s;
+            tmp.set(cell.left - gap, cell.top - gap, cell.right + gap, cell.bottom + gap);
+            shelfRing.setColor(Ui.alpha(tone(L_INK, WHITE), 0.9f * fc));
+            c.drawRoundRect(tmp, r + gap, r + gap, shelfRing);
         }
     }
 
@@ -2569,6 +2595,18 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             labels.add(Ui.tr("Move on the shelf"));
             actions.add(this::startReorder);
         }
+        final boolean customIcon = HomeApps.hasCustomIcon(c, it.pkg);
+        labels.add(Ui.tr("Change icon"));
+        actions.add(() -> {
+            if (activity instanceof HomeActivity) ((HomeActivity) activity).pickIcon(it.pkg, it.label);
+        });
+        if (customIcon) {
+            labels.add(Ui.tr("Original icon"));
+            actions.add(() -> {
+                HomeApps.removeCustomIcon(c, it.pkg);
+                iconChanged(Ui.trf("Original icon: {app}", "app", it.label));
+            });
+        }
         labels.add(Ui.tr("App info"));
         actions.add(() -> startApp(new android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                 android.net.Uri.fromParts("package", it.pkg, null)), it));
@@ -2584,6 +2622,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 .setItems(labels.toArray(new String[0]), (d, which) -> actions.get(which).run())
                 .setNegativeButton(Ui.tr("Cancel"), null)
                 .show();
+    }
+
+    /** A custom icon was saved or removed: the lists again, with a toast. */
+    void iconChanged(String text) {
+        appsChanged();   // read again now, or when the home screen shows next
+        showToast(text);
     }
 
     /** App info or Android's uninstaller (it asks before removing anything). */

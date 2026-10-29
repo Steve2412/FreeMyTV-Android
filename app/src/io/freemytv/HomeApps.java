@@ -186,7 +186,13 @@ final class HomeApps {
             Item it = new Item();
             it.kind = APP;
             it.pkg = pkg;
-            if (d == null) {
+            Bitmap custom = customTile(c, pkg);
+            if (custom != null) {
+                // An icon picked from the gallery (the app menu's Change icon) wins over the logo and the TV art.
+                it.key = pkg;
+                it.label = d != null ? d[1] : ri != null ? String.valueOf(ri.loadLabel(pm)) : pkg;
+                it.setTile(custom);
+            } else if (d == null) {
                 // An app picked in Settings > Shelf that isn't in SHELF: its own name and TV art.
                 it.key = pkg;
                 it.label = ri != null ? String.valueOf(ri.loadLabel(pm)) : pkg;
@@ -526,12 +532,13 @@ final class HomeApps {
             it.pkg = pkg;
             it.key = pkg;
             it.label = app[1];
-            it.setTile(appTile(c, null, pkg, 0));
+            Bitmap custom = customTile(c, pkg);
+            it.setTile(custom != null ? custom : appTile(c, null, pkg, 0));
             items.add(it);
         }
         Collections.sort(items, (a, b) -> a.label.toLowerCase(Locale.ROOT).compareTo(b.label.toLowerCase(Locale.ROOT)));
         synchronized (HomeApps.class) {
-            TILES.keySet().removeIf(k -> k.contains(".") && !seen.contains(k));
+            TILES.keySet().removeIf(k -> k.contains(".") && !k.startsWith(CUSTOM) && !seen.contains(k));
         }
         items.add(special(c, SETTINGS, "freemytv-settings", "Free My TV", "sparkles"));
         return items;
@@ -1074,6 +1081,94 @@ final class HomeApps {
 
     private static float clamp(float v) {
         return Math.max(0, Math.min(1, v));
+    }
+
+    // MARK: - Custom icons (the app menu's Change icon: a picture from the gallery)
+
+    private static final String CUSTOM = "custom:";
+
+    private static File customFile(Context c, String pkg) {
+        return new File(new File(c.getFilesDir(), "icons"), pkg + ".png");
+    }
+
+    static boolean hasCustomIcon(Context c, String pkg) {
+        return pkg != null && customFile(c, pkg).exists();
+    }
+
+    /** The custom icon as a 16:9 card, read once per change of the file; null without one. */
+    private static synchronized Bitmap customTile(Context c, String pkg) {
+        File f = customFile(c, pkg);
+        if (!f.exists()) return null;
+        String key = CUSTOM + pkg + ":" + f.lastModified();
+        Bitmap cached = TILES.get(key);
+        if (cached != null) return cached;
+        Bitmap b = BitmapFactory.decodeFile(f.getPath());
+        if (b == null) return null;
+        b.setHasMipMap(true);
+        TILES.keySet().removeIf(k -> k.startsWith(CUSTOM + pkg + ":"));
+        TILES.put(key, b);
+        return b;
+    }
+
+    static void removeCustomIcon(Context c, String pkg) {
+        //noinspection ResultOfMethodCallIgnored
+        customFile(c, pkg).delete();
+        synchronized (HomeApps.class) {
+            TILES.keySet().removeIf(k -> k.startsWith(CUSTOM + pkg + ":"));
+        }
+    }
+
+    /**
+     * Makes the picture a card the shelf's shape (16:9, twice the tile's size): a photo fills it (cropped at the
+     * center); a picture with transparency (a logo) sits on the dark card, whole. Null if it can't be read.
+     */
+    static boolean saveCustomIcon(Context c, String pkg, android.net.Uri uri) {
+        final int w = TILE_W * 2, h = TILE_H * 2;
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            try (InputStream in = c.getContentResolver().openInputStream(uri)) {
+                BitmapFactory.decodeStream(in, null, bounds);
+            }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false;
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            opts.inSampleSize = 1;
+            while (bounds.outWidth / (opts.inSampleSize * 2) >= w && bounds.outHeight / (opts.inSampleSize * 2) >= h) opts.inSampleSize *= 2;
+            Bitmap src;
+            try (InputStream in = c.getContentResolver().openInputStream(uri)) {
+                src = BitmapFactory.decodeStream(in, null, opts);
+            }
+            if (src == null) return false;
+            Bitmap out = darkTile(w, h);
+            Canvas canvas = new Canvas(out);
+            Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG);
+            float sw = src.getWidth(), sh = src.getHeight();
+            RectF dst;
+            if (src.hasAlpha()) {   // a logo: whole, centered, with a margin
+                float scale = Math.min(w * 0.72f / sw, h * 0.72f / sh);
+                dst = new RectF((w - sw * scale) / 2, (h - sh * scale) / 2, (w + sw * scale) / 2, (h + sh * scale) / 2);
+            } else {                // a photo: fills the card
+                float scale = Math.max(w / sw, h / sh);
+                dst = new RectF((w - sw * scale) / 2, (h - sh * scale) / 2, (w + sw * scale) / 2, (h + sh * scale) / 2);
+            }
+            canvas.drawBitmap(src, null, dst, paint);
+            src.recycle();
+            File f = customFile(c, pkg), part = new File(f.getPath() + ".part");
+            //noinspection ResultOfMethodCallIgnored
+            f.getParentFile().mkdirs();
+            try (FileOutputStream os = new FileOutputStream(part)) {
+                out.compress(Bitmap.CompressFormat.PNG, 100, os);
+            }
+            out.recycle();
+            if (!part.renameTo(f)) return false;
+            synchronized (HomeApps.class) {
+                TILES.keySet().removeIf(k -> k.startsWith(CUSTOM + pkg + ":"));
+            }
+            return true;
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            AppLog.w("custom icon: " + e);
+            return false;
+        }
     }
 
     // MARK: - Cards

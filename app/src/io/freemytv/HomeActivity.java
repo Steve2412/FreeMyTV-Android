@@ -9,6 +9,7 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.widget.TextView;
+import android.widget.Toast;
 
 /**
  * The Free My TV home screen (Android's "Home" role in Free My TV mode). It runs in the :home process: if it crashes,
@@ -72,6 +73,49 @@ public class HomeActivity extends Activity {
         if (home == null) return;
         if (intent.getBooleanExtra(EXTRA_ALL_APPS, false)) home.showAllApps();
         else home.reset(true);
+    }
+
+    // MARK: - Change icon (the app menu): a picture from the gallery or a file manager
+
+    private static final int PICK_ICON = 7301;
+
+    /** Asks for a picture for this app's icon; where the TV has nothing that picks pictures, says what to install. */
+    void pickIcon(String pkg, String label) {
+        getSharedPreferences("home-ui", MODE_PRIVATE).edit().putString("iconFor", pkg).putString("iconLabel", label).apply();
+        Intent[] ways = {
+            new Intent(Intent.ACTION_GET_CONTENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"),
+            new Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"),
+            new Intent(Intent.ACTION_PICK, android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI),
+        };
+        for (Intent way : ways) {
+            if (way.resolveActivity(getPackageManager()) == null) continue;
+            try {
+                startActivityForResult(way, PICK_ICON);
+                return;
+            } catch (RuntimeException e) {
+                AppLog.w("icon picker: " + e.getMessage());
+            }
+        }
+        Toast.makeText(this, Ui.tr("This TV has no app to pick pictures. Install a file manager (X-plore, for example) and try again."),
+                Toast.LENGTH_LONG).show();
+    }
+
+    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != PICK_ICON || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        android.content.SharedPreferences ui = getSharedPreferences("home-ui", MODE_PRIVATE);
+        final String pkg = ui.getString("iconFor", null), label = ui.getString("iconLabel", "");
+        if (pkg == null) return;
+        final android.net.Uri uri = data.getData();
+        final android.content.Context app = getApplicationContext();
+        new Thread(() -> {
+            boolean ok = HomeApps.saveCustomIcon(app, pkg, uri);
+            runOnUiThread(() -> {
+                String text = ok ? Ui.trf("New icon: {app}", "app", label) : Ui.tr("Couldn't read that picture.");
+                if (home != null) home.iconChanged(text);
+                else Toast.makeText(app, text, Toast.LENGTH_LONG).show();
+            });
+        }, "custom-icon").start();
     }
 
     @Override protected void onDestroy() {
