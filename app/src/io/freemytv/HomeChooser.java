@@ -180,8 +180,26 @@ final class HomeChooser {
         return new File(c.getFilesDir(), "home-button-off");
     }
 
+    /**
+     * Off when Original was chosen (an empty file, for good), or for a short pause after our home screen crashed 3 times
+     * (the file holds when the pause ends): then the TV's own launcher takes Home, and our home screen isn't opened
+     * into a crash loop. The service reads this on Home and when a launcher comes to the front, never on other keys.
+     */
     static boolean homeButtonOn(Context c) {
-        return !offFile(c).exists();
+        File f = offFile(c);
+        if (!f.exists()) return true;
+        if (f.length() == 0) return false;
+        try (java.io.FileInputStream in = new java.io.FileInputStream(f)) {
+            byte[] b = new byte[32];
+            int n = in.read(b);
+            long until = Long.parseLong(new String(b, 0, Math.max(0, n), java.nio.charset.StandardCharsets.US_ASCII).trim());
+            if (System.currentTimeMillis() < until) return false;
+            //noinspection ResultOfMethodCallIgnored
+            f.delete();   // the pause is over
+            return true;
+        } catch (IOException | NumberFormatException e) {
+            return false;
+        }
     }
 
     static void setHomeButton(Context c, boolean on) {
@@ -190,13 +208,45 @@ final class HomeChooser {
             //noinspection ResultOfMethodCallIgnored
             f.delete();
         } else {
-            try {
-                //noinspection ResultOfMethodCallIgnored
-                f.createNewFile();
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(f)) {
+                out.flush();   // empty: off until Free My TV is chosen again
             } catch (IOException e) {
                 AppLog.w("home button: " + e.getMessage());
             }
         }
+    }
+
+    /** After 3 crashes in a row: the Home button goes to the TV's launcher for a while, then comes back by itself. */
+    static void pauseHomeButton(Context c, long ms) {
+        try (java.io.FileOutputStream out = new java.io.FileOutputStream(offFile(c))) {
+            out.write(String.valueOf(System.currentTimeMillis() + ms).getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+        } catch (IOException e) {
+            AppLog.w("home button: " + e.getMessage());
+        }
+    }
+
+    /**
+     * The TV's own launchers (every app that answers Home but ours and Android's own screens): when one comes to the
+     * front, the service opens ours again (RemoteKeyService).
+     */
+    static java.util.Set<String> otherHomes(Context c) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        try {
+            Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME);
+            for (ResolveInfo ri : c.getPackageManager().queryIntentActivities(home, PackageManager.MATCH_ALL)) {
+                if (ri.activityInfo == null) continue;
+                String pkg = ri.activityInfo.packageName;
+                if (pkg.equals(HomeMode.PKG) || pkg.equals(HomeMode.GOOGLE_SETUP) || ri.activityInfo.name.contains("FallbackHome")
+                        || pkg.equals("com.android.settings") || pkg.equals("com.android.tv.settings")
+                        || pkg.equals("com.android.provision")) continue;
+                out.add(pkg);
+            }
+        } catch (RuntimeException e) {
+            AppLog.w("home screens: " + e.getMessage());
+        }
+        out.add(HomeMode.TV_LAUNCHER);
+        out.add("com.google.android.apps.tv.launcherx");
+        return out;
     }
 
     private static boolean resolves(Context c, Intent i) {

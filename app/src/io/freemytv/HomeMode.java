@@ -665,20 +665,12 @@ final class HomeMode {
         synchronized (RUN) {
             JSONObject s = state(app);
             if (!legacySwitch(s)) {
-                // Nothing was switched through ADB: ours stops being the preferred home, the Home button goes back to
-                // the TV, and the TV's own home screen opens.
-                if (!FREE.equals(s.optString("mode")) || s.optBoolean("homeReverted")) return;
-                try {
-                    app.getPackageManager().clearPackagePreferredActivities(PKG);
-                } catch (RuntimeException e) {
-                    AppLog.w("clear preferred home: " + e.getMessage());
-                }
-                HomeChooser.setHomeButton(app, false);
-                try {
-                    s.put("homeReverted", true);
-                } catch (JSONException ignored) {}
-                save(app, s);
-                notice(app, Ui.tr("Free My TV's home screen crashed 3 times in a row; I switched back to the original one."));
+                // Nothing was switched through ADB: for a few minutes the Home button goes to the TV's own home screen
+                // (so ours isn't opened into a crash loop), then comes back by itself. Free My TV stays the choice: a
+                // crash used to turn the Home button off for good, and Home then always went to the TV's launcher.
+                if (!FREE.equals(s.optString("mode"))) return;
+                HomeChooser.pauseHomeButton(app, 5 * 60_000L);
+                notice(app, Ui.tr("Free My TV's home screen crashed 3 times in a row; the TV's own one takes Home for 5 minutes."));
                 android.content.Intent stock = HomeChooser.stockHome(app);
                 if (stock != null) {
                     try {

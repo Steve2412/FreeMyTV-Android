@@ -1,0 +1,53 @@
+# Builds "mi versión" de Free My TV in the cloud (no JDK or Android SDK on your computer).
+# Optional repository secrets (Settings › Secrets and variables › Actions): TMDB_KEY, STREMIO_AUTH_KEY.
+# The city is set on the TV (Home Settings › City).
+name: Build Free My TV (mi version)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [freemytv-java]
+
+permissions:
+  contents: write   # the build log goes to the ci-logs-java branch
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Android SDK (build-tools 34, android-34)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$RUNNER_TEMP/sdk" \
+            "build-tools;34.0.0" "platforms;android-34" > /dev/null
+          echo "ANDROID_HOME=$RUNNER_TEMP/sdk" >> "$GITHUB_ENV"
+      - name: Settings
+        env:
+          TMDB_KEY: ${{ secrets.TMDB_KEY }}
+          STREMIO_AUTH_KEY: ${{ secrets.STREMIO_AUTH_KEY }}
+        run: |
+          cp config.example.properties config.properties
+          sed -i "s|^tmdb_key=.*|tmdb_key=${TMDB_KEY}|; s|^stremio_auth_key=.*|stremio_auth_key=${STREMIO_AUTH_KEY}|" config.properties
+      # Signed with ci-freemytv.keystore (in this branch on purpose), so each new build installs over the last one.
+      - name: Build
+        run: |
+          set -o pipefail
+          cp ci-freemytv.keystore freemytv.keystore
+          ./build.sh 2>&1 | tee build.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FreeMyTV-mi-version-apk
+          path: FreeMyTV.apk
+      - name: Save the log
+        if: always()
+        run: |
+          mkdir -p /tmp/logs && cp build.txt /tmp/logs/ 2>/dev/null || true
+          echo "${{ job.status }} $GITHUB_SHA" > /tmp/logs/status.txt
+          cd /tmp/logs && git init -q && git checkout -q -b ci-logs-java
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com add -A
+          git -c user.name=ci -c user.email=ci@users.noreply.github.com commit -qm "log $GITHUB_SHA"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" ci-logs-java

@@ -122,7 +122,11 @@ final class RemoteKeys {
         return true;
     }
 
+    /** When openHome last opened our home screen (uptime): the service doesn't bounce the TV's launcher twice for it. */
+    static volatile long openedAt;
+
     static void openHome(Context c) {
+        openedAt = android.os.SystemClock.uptimeMillis();
         Intent home = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setComponent(HomeChooser.HOME)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
         try {
