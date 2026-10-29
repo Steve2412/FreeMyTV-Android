@@ -1,0 +1,41 @@
+# Builds FreeMyTV.apk in the cloud (no JDK or Android SDK on your computer): Actions › Build APK › Run workflow, then
+# download "FreeMyTV-apk" from the run's Artifacts.
+# Optional repository secrets (Settings › Secrets and variables › Actions), built into the APK: TMDB_KEY,
+# STREMIO_AUTH_KEY. Without them, the keys can be typed on the TV (Home Settings) and the city is set there too.
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Android SDK (build-tools 34, android-34)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$RUNNER_TEMP/sdk" \
+            "build-tools;34.0.0" "platforms;android-34" > /dev/null
+          echo "ANDROID_HOME=$RUNNER_TEMP/sdk" >> "$GITHUB_ENV"
+      - name: Settings
+        env:
+          TMDB_KEY: ${{ secrets.TMDB_KEY }}
+          STREMIO_AUTH_KEY: ${{ secrets.STREMIO_AUTH_KEY }}
+        run: |
+          cp config.example.properties config.properties
+          sed -i "s|^tmdb_key=.*|tmdb_key=${TMDB_KEY}|; s|^stremio_auth_key=.*|stremio_auth_key=${STREMIO_AUTH_KEY}|" config.properties
+      # Signed with ci-freemytv.keystore (kept in the repository on purpose), so each new build installs over the last.
+      - name: Build
+        run: |
+          cp ci-freemytv.keystore freemytv.keystore
+          ./build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FreeMyTV-apk
+          path: FreeMyTV.apk

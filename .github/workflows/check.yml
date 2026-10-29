@@ -1,29 +1,19 @@
-# Builds everything and checks the catalogues on every pull request and push to main, with tools/check.sh: the same
-# script contributors run before pushing, so a PR shows whether it still builds before anyone tries it on a TV.
+# Builds the app and checks the translation catalogues on every pull request.
 name: Check
 
 on:
   pull_request:
-  push:
-    branches: [main]
 
 permissions:
   contents: read
 
-# A new push to a PR cancels the run for the push before it (on main, every merge keeps its own run).
-concurrency:
-  group: check-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   android:
-    name: Google TV app
+    name: Android TV app
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      # The JDK and SDK the README asks for, not whatever the runner image has (build.sh takes the newest it finds,
-      # so a newer android.jar would let through a call that breaks everyone's build).
-      - uses: actions/setup-java@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
@@ -32,12 +22,4 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --sdk_root="$RUNNER_TEMP/sdk" \
             "build-tools;34.0.0" "platforms;android-34" > /dev/null
           echo "ANDROID_HOME=$RUNNER_TEMP/sdk" >> "$GITHUB_ENV"
-      # build.sh makes a throwaway config.properties and signing key: no secrets needed.
-      - run: tools/check.sh android
-
-  web:
-    name: Translations, LG and Samsung
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - run: tools/check.sh web
+      - run: cp ci-freemytv.keystore freemytv.keystore && tools/check.sh
